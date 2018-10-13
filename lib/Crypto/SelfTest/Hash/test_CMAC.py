@@ -35,8 +35,9 @@
 
 import json
 import unittest
+from binascii import unhexlify
 
-from Crypto.Util.py3compat import tobytes, _memoryview, unhexlify
+from Crypto.Util.py3compat import tobytes, _memoryview
 
 from Crypto.Hash import CMAC
 from Crypto.Cipher import AES, DES3
@@ -346,10 +347,9 @@ class TestVectorsWycheproof(unittest.TestCase):
         self._id = "None"
 
     def setUp(self):
-        file_in = open(pycryptodome_filename(
-                        "Crypto.SelfTest.Hash.test_vectors.wycheproof".split("."),
-                        "aes_cmac_test.json"), "rt")
-        tv_tree = json.load(file_in)
+        comps = "Crypto.SelfTest.Hash.test_vectors.wycheproof".split(".")
+        with open(pycryptodome_filename(comps, "aes_cmac_test.json"), "rt") as file_in:
+            tv_tree = json.load(file_in)
 
         class TestVector(object):
             pass
@@ -382,7 +382,7 @@ class TestVectorsWycheproof(unittest.TestCase):
         
         try:
             tag = CMAC.new(tv.key, tv.msg, ciphermod=AES, mac_len=tv.tag_size).digest()
-        except ValueError, e:
+        except ValueError as e:
             if len(tv.key) not in (16, 24, 32) and "key length" in str(e):
                 return
             raise e
@@ -395,7 +395,7 @@ class TestVectorsWycheproof(unittest.TestCase):
        
         try:
             mac = CMAC.new(tv.key, tv.msg, ciphermod=AES, mac_len=tv.tag_size)
-        except ValueError, e:
+        except ValueError as e:
             if len(tv.key) not in (16, 24, 32) and "key length" in str(e):
                 return
             raise e

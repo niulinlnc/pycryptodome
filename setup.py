@@ -20,21 +20,36 @@
 # SOFTWARE.
 # ===================================================================
 
+from __future__ import print_function
+
 try:
     from setuptools import Extension, Command, setup
 except ImportError:
     from distutils.core import Extension, Command, setup
 from distutils.command.build_ext import build_ext
-from distutils.command.build import build
 from distutils.errors import CCompilerError
 from distutils import ccompiler
 import distutils
-import platform
 import re
 import os
 import sys
 import shutil
 import struct
+if sys.version_info[0:2] == (2, 6):
+    from distutils import sysconfig
+else:
+    import sysconfig
+
+# Monkey patch for https://bugs.python.org/issue34108
+if sys.version_info[0:3] == (3, 7, 0) and os.name == 'nt':
+    import io
+    from lib2to3.refactor import RefactoringTool
+
+    def new_write_file(self, new_text, filename, old_text, encoding=None):
+        fp = io.open(filename, "w", encoding=encoding, newline='')
+        fp.write(new_text)
+        self.wrote = True
+    RefactoringTool.write_file = new_write_file
 
 use_separate_namespace = os.path.isfile(".separate_namespace")
 
@@ -54,7 +69,7 @@ PyCryptodome
 PyCryptodome is a self-contained Python package of low-level
 cryptographic primitives.
 
-It supports Python 2.4 or newer, all Python 3 versions and PyPy.
+It supports Python 2.6 and 2.7, Python 3.4 and newer, and PyPy.
 
 You can install it with::
 
@@ -104,30 +119,12 @@ All the code can be downloaded from `GitHub`_.
     replace("OTHER_PROJECT", other_project).\
     replace("OTHER_ROOT", other_root)
 
-if sys.version[0:1] == '1':
-    raise RuntimeError("The Python Cryptography Toolkit requires "
-                       "Python 2.x or 3.x to build.")
-
 try:
     # Python 3
     from distutils.command.build_py import build_py_2to3 as build_py
 except ImportError:
     # Python 2
     from distutils.command.build_py import build_py
-
-
-# Work around the print / print() issue with Python 2.x and 3.x. We only need
-# to print at one point of the code, which makes this easy
-def PrintErr(*args, **kwd):
-    fout = kwd.get("file", sys.stderr)
-    w = fout.write
-    if args:
-        w(str(args[0]))
-        sep = kwd.get("sep", " ")
-        for a in args[1:]:
-            w(sep)
-            w(str(a))
-        w(kwd.get("end", "\n"))
 
 
 def test_compilation(program, extra_cc_options=None, extra_libraries=None, msg=''):
@@ -147,7 +144,7 @@ def test_compilation(program, extra_cc_options=None, extra_libraries=None, msg='
     debug = False
     # Mute the compiler and the linker
     if msg:
-        PrintErr("Testing support for %s" % msg)
+        print("Testing support for %s" % msg)
     if not (debug or os.name == 'nt'):
         old_stdout = os.dup(sys.stdout.fileno())
         old_stderr = os.dup(sys.stderr.fileno())
@@ -158,6 +155,7 @@ def test_compilation(program, extra_cc_options=None, extra_libraries=None, msg='
     objects = []
     try:
         compiler = ccompiler.new_compiler()
+        distutils.sysconfig.customize_compiler(compiler)
 
         if compiler.compiler_type in [ 'msvc' ]:
             # Force creation of the manifest file (http://bugs.python.org/issue16296)
@@ -166,7 +164,10 @@ def test_compilation(program, extra_cc_options=None, extra_libraries=None, msg='
         else:
             extra_linker_options = []
 
-        distutils.sysconfig.customize_compiler(compiler)
+        # In Unix, force the linker step to use CFLAGS and not CC alone (see GH#180)
+        if compiler.compiler_type in [ 'unix' ]:
+            compiler.set_executables(linker_exe=compiler.compiler)
+
         objects = compiler.compile([fname], extra_postargs=extra_cc_options)
         compiler.link_executable(objects, oname, libraries=extra_libraries, extra_preargs=extra_linker_options)
         result = True
@@ -191,14 +192,12 @@ def test_compilation(program, extra_cc_options=None, extra_libraries=None, msg='
             x = ""
         else:
             x = " not"
-        PrintErr("Target does%s support %s" % (x, msg))
+        print("Target does%s support %s" % (x, msg))
 
     return result
 
 
 class PCTBuildExt (build_ext):
-
-    aesni_mod_names = package_root + ".Cipher._raw_aesni",
 
     # Avoid linking Python's dynamic library
     def get_libraries(self, ext):
@@ -214,24 +213,17 @@ class PCTBuildExt (build_ext):
         # Call the superclass's build_extensions method
         build_ext.build_extensions(self)
 
-    def check_cpuid_h(self):
-        # UNIX
+    def compiler_supports_uint128(self):
         source = """
-        #include <cpuid.h>
         int main(void)
         {
-            unsigned int eax, ebx, ecx, edx;
-            __get_cpuid(1, &eax, &ebx, &ecx, &edx);
+            __uint128_t x;
             return 0;
         }
         """
-        if test_compilation(source, msg="cpuid.h header"):
-            self.compiler.define_macro("HAVE_CPUID_H")
-            return True
-        else:
-            return False
+        return test_compilation(source, msg="128-bit integer")
 
-    def check_intrin_h(self):
+    def compiler_has_intrin_h(self):
         # Windows
         source = """
         #include <intrin.h>
@@ -242,14 +234,22 @@ class PCTBuildExt (build_ext):
             return 0;
         }
         """
-        if test_compilation(source, msg="intrin.h header"):
-            self.compiler.define_macro("HAVE_INTRIN_H")
-            return True
-        else:
-            return False
+        return test_compilation(source, msg="intrin.h header")
 
-    def check_aesni(self):
+    def compiler_has_cpuid_h(self):
+        # UNIX
+        source = """
+        #include <cpuid.h>
+        int main(void)
+        {
+            unsigned int eax, ebx, ecx, edx;
+            __get_cpuid(1, &eax, &ebx, &ecx, &edx);
+            return 0;
+        }
+        """
+        return test_compilation(source, msg="cpuid.h header")
 
+    def compiler_supports_aesni(self):
         source = """
         #include <wmmintrin.h>
         __m128i f(__m128i x, __m128i y) {
@@ -260,46 +260,102 @@ class PCTBuildExt (build_ext):
         }
         """
 
-        aes_mods = [ x for x in self.extensions if x.name in self.aesni_mod_names ]
-        result = test_compilation(source)
-        if not result:
-            result = test_compilation(source, extra_cc_options=['-maes'], msg='wmmintrin.h header')
-            if result:
-                for x in aes_mods:
-                    x.extra_compile_args += ['-maes']
-        return result
+        if test_compilation(source):
+            return {'extra_options':[]}
 
-    def check_uint128(self):
+        if test_compilation(source, extra_cc_options=['-maes'], msg='AESNI intrinsics'):
+            return {'extra_options':['-maes']}
+
+        return False
+
+    def compiler_supports_clmul(self):
         source = """
-        int main(void)
-        {
-            __uint128_t x;
+        #include <wmmintrin.h>
+        __m128i f(__m128i x, __m128i y) {
+            return _mm_clmulepi64_si128(x, y, 0x00);
+        }
+        int main(void) {
             return 0;
         }
         """
-        if test_compilation(source, msg="128-bit integer"):
-            self.compiler.define_macro("HAVE_UINT128")
-            return True
-        else:
-            return False
+
+        if test_compilation(source):
+            return {'extra_options':[]}
+
+        if test_compilation(source, extra_cc_options=['-mpclmul','-mssse3'], msg='CLMUL intrinsics'):
+            return {'extra_options':['-mpclmul', '-mssse3']}
+
+        return False
+
+    def compiler_has_posix_memalign(self):
+        source = """
+        #include <stdlib.h>
+        int main(void) {
+            void *new_mem;
+            posix_memalign((void**)&new_mem, 16, 101);
+            return 0;
+        }
+        """
+        return test_compilation(source, msg="posix_memalign")
+
+    def compiler_has_memalign(self):
+        source = """
+        #include <malloc.h>
+        int main(void) {
+            void *p;
+            p = memalign(16, 101);
+            return 0;
+        }
+        """
+        return test_compilation(source, msg="memalign")
 
     def detect_modules (self):
 
-        self.check_uint128()
-        has_intrin_h = self.check_intrin_h()
+        if self.compiler_supports_uint128():
+            self.compiler.define_macro("HAVE_UINT128")
 
-        # Detect compiler support for CPUID instruction and AESNI
-        if (self.check_cpuid_h() or has_intrin_h) and self.check_aesni():
-            PrintErr("Compiling support for Intel AES instructions")
+        intrin_h_present = self.compiler_has_intrin_h()
+        if intrin_h_present:
+            self.compiler.define_macro("HAVE_INTRIN_H")
+
+        cpuid_h_present = self.compiler_has_cpuid_h()
+        if cpuid_h_present:
+            self.compiler.define_macro("HAVE_CPUID_H")
+
+        if self.compiler_has_posix_memalign():
+            self.compiler.define_macro("HAVE_POSIX_MEMALIGN")
+        elif self.compiler_has_memalign():
+            self.compiler.define_macro("HAVE_MEMALIGN")
+
+        # AESNI
+        aesni_result = (cpuid_h_present or intrin_h_present) and self.compiler_supports_aesni()
+        aesni_mod_name = package_root + ".Cipher._raw_aesni"
+        if aesni_result:
+            print("Compiling support for AESNI instructions")
+            aes_mods = [ x for x in self.extensions if x.name == aesni_mod_name ]
+            for x in aes_mods:
+                x.extra_compile_args += aesni_result['extra_options']
         else:
-            PrintErr ("warning: no support for Intel AESNI instructions")
-            self.remove_extensions(self.aesni_mod_names)
+            print ("Warning: compiler does not support AESNI instructions")
+            self.remove_extension(aesni_mod_name)
 
-    def remove_extensions(self, names):
+        # CLMUL
+        clmul_result = (cpuid_h_present or intrin_h_present) and self.compiler_supports_clmul()
+        clmul_mod_name = package_root + ".Hash._ghash_clmul"
+        if clmul_result:
+            print("Compiling support for CLMUL instructions")
+            clmul_mods = [ x for x in self.extensions if x.name == clmul_mod_name ]
+            for x in clmul_mods:
+                x.extra_compile_args += clmul_result['extra_options']
+        else:
+            print ("Warning: compiler does not support CLMUL instructions")
+            self.remove_extension(clmul_mod_name)
+
+    def remove_extension(self, name):
         """Remove the specified extension from the list of extensions
         to build"""
 
-        self.extensions = [ x for x in self.extensions if x.name not in names ]
+        self.extensions = [ x for x in self.extensions if x.name != name ]
 
 
 class PCTBuildPy(build_py):
@@ -370,7 +426,7 @@ class TestCommand(Command):
                 # Import sub-package or module
                 moduleObj = __import__( full_module, globals(), locals(), module_name )
 
-            PrintErr(package_root + ".Math implementation:",
+            print(package_root + ".Math implementation:",
                      str(Numbers._implementation))
 
             SelfTest.run(module=moduleObj, verbosity=self.verbose, stream=sys.stdout, config=self.config)
@@ -405,7 +461,7 @@ def create_cryptodome_lib():
             full_file_name_src = os.path.join(root_src, file_name)
             full_file_name_dst = os.path.join(root_dst, file_name)
 
-            PrintErr("Copying file %s to %s" % (full_file_name_src, full_file_name_dst))
+            print("Copying file %s to %s" % (full_file_name_src, full_file_name_dst))
             shutil.copy2(full_file_name_src, full_file_name_dst)
 
             if not full_file_name_dst.endswith(".py"):
@@ -424,7 +480,7 @@ def create_cryptodome_lib():
             fd.close()
 
 
-def enable_gcc_sse2(extensions):
+def compiler_supports_sse2():
     source = """
     #include <x86intrin.h>
     int main(void)
@@ -434,11 +490,26 @@ def enable_gcc_sse2(extensions):
         return 0;
     }
     """
-    if test_compilation(source, extra_cc_options=['-msse2'], msg="x86intrin.h header"):
-        for x in extensions:
-            x.extra_compile_args += ['-msse2']
-            x.define_macros += [ ("HAVE_X86INTRIN_H", None) ]
+    return test_compilation(source, extra_cc_options=['-msse2'], msg="x86intrin.h header")
 
+def enable_compiler_specific_options(extensions):
+
+    def check_compiler(compiler):
+        result = compiler in os.environ.get('CC', '')
+        builtin = sysconfig.get_config_vars('CC')[0]
+        result = result or (builtin and compiler in builtin)
+        return result
+
+    clang = check_compiler("clang")
+    gcc = check_compiler("gcc")
+
+    if clang or gcc:
+        sse2 = compiler_supports_sse2()
+        for x in extensions:
+            x.extra_compile_args += ['-O3']
+            if sse2:
+                x.extra_compile_args += ['-msse2']
+                x.define_macros += [ ("HAVE_X86INTRIN_H", None) ]
 
 # Parameters for setup
 packages =  [
@@ -489,7 +560,6 @@ package_data = {
     "Crypto.SelfTest.PublicKey" : [
         "test_vectors/ECC/*.*",
     ],
-    "Crypto.Math" : [ "mpir.dll" ],
 }
 
 system_bits = 8 * struct.calcsize("P")
@@ -536,6 +606,17 @@ ext_modules = [
     Extension("Crypto.Hash._BLAKE2s",
         include_dirs=['src/'],
         sources=["src/blake2s.c"]),
+    Extension("Crypto.Hash._ghash_portable",
+        include_dirs=['src/'],
+        sources=['src/ghash_portable.c']),
+    Extension("Crypto.Hash._ghash_clmul",
+        include_dirs=['src/'],
+        sources=['src/ghash_clmul.c']),
+
+    # MACs
+    Extension("Crypto.Hash._poly1305",
+        include_dirs=['src/'],
+        sources=["src/poly1305.c"]),
 
     # Block encryption algorithms
     Extension("Crypto.Cipher._raw_aes",
@@ -559,10 +640,7 @@ ext_modules = [
     Extension("Crypto.Cipher._raw_des3",
         include_dirs=['src/', 'src/libtom/'],
         sources=["src/DES3.c"]),
-    Extension("Crypto.Util._galois",
-        include_dirs=['src/'],
-        sources=['src/galois.c']),
-    Extension("Crypto.Util._cpuid",
+    Extension("Crypto.Util._cpuid_c",
         include_dirs=['src/'],
         sources=['src/cpuid.c']),
 
@@ -614,12 +692,12 @@ ext_modules = [
         ),
 ]
 
-# Enable SSE2 for GCC
-enable_gcc_sse2(ext_modules)
+# Enable some optimization if we know the compiler
+enable_compiler_specific_options(ext_modules)
 
 # Define big/little endian flag
 for x in ext_modules:
-    x.define_macros += [ ("PY_" + sys.byteorder.upper() + "_ENDIAN", None) ]
+    x.define_macros += [ ("PYCRYPTO_" + sys.byteorder.upper() + "_ENDIAN", None) ]
 
 if use_separate_namespace:
 
@@ -640,24 +718,26 @@ if use_separate_namespace:
         create_cryptodome_lib()
 
 
-# By doing this we neeed to change version information in a single file
-for line in open(os.path.join("lib", package_root, "__init__.py")):
-    if line.startswith("version_info"):
-        version_tuple = eval(line.split("=")[1])
+# By doing this we need to change version information in a single file
+with open(os.path.join("lib", package_root, "__init__.py")) as init_root:
+    for line in init_root:
+        if line.startswith("version_info"):
+            version_tuple = eval(line.split("=")[1])
 
 version_string = ".".join([str(x) for x in version_tuple])
 
 setup(
-    name = project_name,
-    version = version_string,
-    description = "Cryptographic library for Python",
-    long_description = longdesc,
-    author = "Helder Eijs",
-    author_email = "helderijs@gmail.com",
-    url = "http://www.pycryptodome.org",
-    platforms = 'Posix; MacOS X; Windows',
-    zip_safe = False,
-    classifiers = [
+    name=project_name,
+    version=version_string,
+    description="Cryptographic library for Python",
+    long_description=longdesc,
+    author="Helder Eijs",
+    author_email="helderijs@gmail.com",
+    url="https://www.pycryptodome.org",
+    platforms='Posix; MacOS X; Windows',
+    zip_safe=False,
+    python_requires='>=2.6, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*',
+    classifiers=[
         'Development Status :: 4 - Beta',
         'License :: OSI Approved :: BSD License',
         'License :: Public Domain',
@@ -670,14 +750,18 @@ setup(
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
     ],
-    packages = packages,
-    package_dir = package_dir,
-    package_data = package_data,
-    cmdclass = {
+    packages=packages,
+    package_dir=package_dir,
+    package_data=package_data,
+    cmdclass={
         'build_ext':PCTBuildExt,
         'build_py': PCTBuildPy,
         'test': TestCommand,
         },
-    ext_modules = ext_modules,
+    ext_modules=ext_modules,
 )

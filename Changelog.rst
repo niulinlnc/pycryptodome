@@ -1,6 +1,92 @@
 Changelog
 =========
 
+3.x.x (xx xxxxxx 2018)
+++++++++++++++++++++++
+
+New features
+------------
+
+* Added support for Poly1305 MAC (with AES and ChaCha20 ciphers for key derivation).
+* Added support for ChaCha20-Poly1305 AEAD cipher.
+* New parameter ``output`` for ``Crypto.Util.strxor.strxor`` and ``Crypto.Util.strxor.strxor_c``
+  to have the result put into a pre-allocated buffer (e.g. a ``bytearray``).
+
+Breaks in compatibility
+-----------------------
+
+* Drop support for Python 3.3, ``Crypto.Util.py3compat.unhexlify`` and ``Crypto.Util.py3compat.hexlify``.
+* With the old Python 2.6, use only ``ctypes`` (and not ``cffi``) to interface to native code.
+
+3.6.6 (17 August 2018)
+++++++++++++++++++++++
+
+Resolved issues
+---------------
+
+* GH#198: Fix vulnerability on AESNI ECB with payloads smaller than 16 bytes.
+
+3.6.5 (12 August 2018)
+++++++++++++++++++++++
+
+Resolved issues
+---------------
+
+* GH#187: Fixed incorrect AES encryption/decryption with AES acceleration on x86
+  due to gcc's optimization and strict aliasing rules.
+* GH#188: More prime number candidates than necessary where discarded as composite
+  due to the limited way D values were searched in the Lucas test.
+* Fixed ResouceWarnings and DeprecationWarnings.
+* Workaround for Python 3.7.0 bug on Windows (https://bugs.python.org/issue34108).
+
+3.6.4 (10 July 2018)
++++++++++++++++++++++
+
+New features
+------------
+
+* Build Python 3.7 wheels on Linux, Windows and Mac.
+
+Resolved issues
+---------------
+
+* GH#178: Rename ``_cpuid`` module to make upgrades more robust.
+* More meaningful exceptions in case of mismatch in IV length (CBC/OFB/CFB modes).
+* Fix compilation issues on Solaris 10/11.
+
+3.6.3 (21 June 2018)
++++++++++++++++++++++
+
+Resolved issues
+---------------
+
+* GH#175: Fixed incorrect results for CTR encryption/decryption with more than 8 blocks.
+
+3.6.2 (19 June 2018)
++++++++++++++++++++++
+
+New features
+------------
+* ChaCha20 accepts 96 bit nonces (in addition to 64 bit nonces)
+  as defined in RFC7539.
+* Accelerate AES-GCM on x86 using PCLMULQDQ instruction.
+* Accelerate AES-ECB and AES-CTR on x86 by pipelining AESNI instructions.
+* As result of the two improvements above, on x86 (Broadwell):
+
+  - AES-ECB and AES-CTR are 3x faster
+  - AES-GCM is 9x faster
+
+Resolved issues
+---------------
+
+* On Windows, MPIR library was stilled pulled in if renamed to ``gmp.dll``.
+
+Breaks in compatibility
+-----------------------
+
+* In ``Crypto.Util.number``, functions ``floor_div`` and ``exact_div``
+  have been removed. Also, ``ceil_div`` is limited to non-negative terms only.
+
 3.6.1 (15 April 2018)
 +++++++++++++++++++++
 
@@ -14,9 +100,9 @@ Resolved issues
 ---------------
 
 * In certain circumstances (at counter wrapping, which happens on average after
-  32 GBi) AES GCM produced wrong ciphertexts.
+  32 GB) AES GCM produced wrong ciphertexts.
 * Method ``encrypt()`` of AES SIV cipher could be still called,
-  whereas only ``encrypt_and_digest()`` should be allowed.
+  whereas only ``encrypt_and_digest()`` is allowed.
 
 3.6.0 (8 April 2018)
 ++++++++++++++++++++
@@ -31,7 +117,7 @@ New features
 Resolved issues
 ---------------
 
-* Reintroduced `Crypto.__version__` variable as in PyCrypto.
+* Reintroduced ``Crypto.__version__`` variable as in PyCrypto.
 * Fixed compilation problem with MinGW.
 
 3.5.1 (8 March 2018)
@@ -288,7 +374,7 @@ New features
 ------------
 
 * Windows wheels bundle the MPIR library
-* Detection of faults occuring during secret RSA operations
+* Detection of faults occurring during secret RSA operations
 * Detection of non-prime (weak) q value in DSA domain parameters
 * Added original Keccak hash family (b=1600 only).
   In the process, simplified the C code base for SHA-3.

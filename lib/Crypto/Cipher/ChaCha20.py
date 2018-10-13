@@ -59,11 +59,11 @@ _raw_chacha20_lib = load_pycryptodome_raw_lib("Crypto.Cipher._chacha20",
                     """)
 
 
-class ChaCha20Cipher:
+class ChaCha20Cipher(object):
     """ChaCha20 cipher object. Do not create it directly. Use :py:func:`new` instead.
 
-    :var nonce: The nonce with length 8
-    :vartype nonce: byte string
+    :var nonce: The nonce with length 8 or 12
+    :vartype nonce: bytes
     """
 
     block_size = 1
@@ -92,9 +92,9 @@ class ChaCha20Cipher:
         """Encrypt a piece of data.
 
         :param plaintext: The data to encrypt, of any size.
-        :type plaintext: bytes, bytearray, memoryview
-        :returns: the encrypted byte string, of equal length as the
-          plaintext.
+        :type plaintext: bytes/bytearray/memoryview
+        :returns: the ciphertext (as ``bytes``),
+                  of equal length as the plaintext.
         """
 
         if self.encrypt not in self._next:
@@ -119,9 +119,9 @@ class ChaCha20Cipher:
         """Decrypt a piece of data.
 
         :param ciphertext: The data to decrypt, of any size.
-        :type ciphertext: bytes, bytearray, memoryview
-        :returns: the decrypted byte string, of equal length as the
-          ciphertext.
+        :type ciphertext: bytes/bytearray/memoryview
+        :returns: the plaintext (as ``bytes``),
+                  of equal length as the ciphertext.
         """
 
         if self.decrypt not in self._next:
@@ -130,7 +130,7 @@ class ChaCha20Cipher:
 
         try:
             return self._encrypt(ciphertext)
-        except ValueError, e:
+        except ValueError as e:
             raise ValueError(str(e).replace("enc", "dec"))
 
     def seek(self, position):
@@ -140,8 +140,7 @@ class ChaCha20Cipher:
             The absolute position within the key stream, in bytes.
         """
 
-        offset = position & 0x3f
-        position >>= 6
+        position, offset = divmod(position, 64)
         block_low = position & 0xFFFFFFFF
         block_high = position >> 32
 
@@ -155,26 +154,55 @@ class ChaCha20Cipher:
             raise ValueError("Error %d while seeking with ChaCha20" % result)
 
 
+def _derive_Poly1305_key_pair(key, nonce):
+    """Derive a tuple (r, s, nonce) for a Poly1305 MAC.
+    
+    If nonce is ``None``, a new 12-byte nonce is generated.
+    """
+
+    if len(key) != 32:
+        raise ValueError("Poly1305 with ChaCha20 requires a 32-byte key")
+
+    if nonce is None:
+        padded_nonce = nonce = get_random_bytes(12)
+    elif len(nonce) == 8:
+        # See RFC7538, 2.6: [...] ChaCha20 as specified here requires a 96-bit
+        # nonce.  So if the provided nonce is only 64-bit, then the first 32
+        # bits of the nonce will be set to a constant number.
+        # This will usually be zero, but for protocols with multiple senders it may be
+        # different for each sender, but should be the same for all
+        # invocations of the function with the same key by a particular
+        # sender.
+        padded_nonce = b'\x00\x00\x00\x00' + nonce
+    elif len(nonce) == 12:
+        padded_nonce = nonce
+    else:
+        raise ValueError("Poly1305 with ChaCha20 requires an 8- or 12-byte nonce")
+
+    rs = new(key=key, nonce=padded_nonce).encrypt(b'\x00' * 32)
+    return rs[:16], rs[16:], nonce
+
+
 def new(**kwargs):
     """Create a new ChaCha20 cipher
 
     :keyword key: The secret key to use. It must be 32 bytes long.
-    :type key: byte string
+    :type key: bytes/bytearray/memoryview
 
     :keyword nonce:
         A mandatory value that must never be reused for any other encryption
-        done with this key. It must be 8 bytes long.
+        done with this key. It must be 8 or 12 bytes long.
 
-        If not provided, a random byte string will be generated (you can read
-        it back via the ``nonce`` attribute of the returned object).
-    :type nonce: bytes, bytearray, memoryview
+        If not provided, 8 ``bytes`` will be randomly generated
+        (you can find them back in the ``nonce`` attribute).
+    :type nonce: bytes/bytearray/memoryview
 
     :Return: a :class:`Crypto.Cipher.ChaCha20.ChaCha20Cipher` object
     """
 
     try:
         key = kwargs.pop("key")
-    except KeyError, e:
+    except KeyError as e:
         raise TypeError("Missing parameter %s" % e)
 
     nonce = kwargs.pop("nonce", None)
@@ -183,8 +211,8 @@ def new(**kwargs):
 
     if len(key) != 32:
         raise ValueError("ChaCha20 key must be 32 bytes long")
-    if len(nonce) != 8:
-        raise ValueError("ChaCha20 nonce must be 8 bytes long")
+    if len(nonce) not in (8, 12):
+        raise ValueError("ChaCha20 nonce must be 8 or 12 bytes long")
 
     if kwargs:
         raise TypeError("Unknown parameters: " + str(kwargs))

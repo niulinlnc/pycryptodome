@@ -29,59 +29,24 @@
  * ===================================================================
  */
 
-#include "pycrypto_common.h"
+#include "common.h"
 
 FAKE_INIT(chacha20)
 
 #define KEY_SIZE   32
-#define NONCE_SIZE 8
 
 typedef struct {
     /** Initial state for the next iteration **/
     uint32_t h[16];
+    size_t nonceSize;  /** in bytes **/
 
     /** How many bytes at the beginning of the key stream
       * have already been used.
       */
-    uint8_t usedKeyStream;
+    unsigned usedKeyStream;
 
     uint8_t keyStream[sizeof(uint32_t)*16];
 } stream_state;
-
-static int littleEndian(void) {
-    int test = 1;
-    return *((uint8_t*)&test) == 1;
-}
-
-static void byteSwap(uint32_t *v)
-{
-    union {
-        uint32_t w;
-        uint8_t b[4];
-    } x, y;
-
-    x.w = *v;
-    y.b[0] = x.b[3];
-    y.b[1] = x.b[2];
-    y.b[2] = x.b[1];
-    y.b[3] = x.b[0];
-    *v = y.w;
-}
-
-/** Convert status word from little endian to native and vice versa **/
-static void fix_endianess(uint32_t h[16], unsigned start, unsigned end)
-{
-    unsigned i;
-
-    if (littleEndian())
-        return;
-    for (i=start; i<end; i++)
-        byteSwap(&h[i]);
-}
-
-static unsigned minAB(unsigned a, unsigned b) {
-    return a < b ? a : b;
-}
 
 #define ROTL(q, n)  (((q) << (n)) | ((q) >> (32 - (n))))
 
@@ -99,6 +64,7 @@ EXPORT_SYM int chacha20_init(stream_state **pState,
                              size_t nonceSize)
 {
     stream_state *hs;
+    unsigned i;
 
     if (NULL == pState || NULL == nonce)
         return ERR_NULL;
@@ -106,7 +72,7 @@ EXPORT_SYM int chacha20_init(stream_state **pState,
     if (NULL == key || keySize != KEY_SIZE)
         return ERR_KEY_SIZE;
 
-    if (NULL == nonce || nonceSize != NONCE_SIZE)
+    if (nonceSize != 8 && nonceSize != 12)
         return ERR_NONCE_SIZE;
 
     *pState = hs = (stream_state*) calloc(1, sizeof(stream_state));
@@ -117,13 +83,23 @@ EXPORT_SYM int chacha20_init(stream_state **pState,
     hs->h[1] = 0x3320646e;
     hs->h[2] = 0x79622d32;
     hs->h[3] = 0x6b206574;
+    
+    /** Move 256-bit/32-byte key into h[4..11] **/
+    for (i=0; i<32/4; i++) {
+        hs->h[4+i] = LOAD_U32_LITTLE(key + 4*i);
+    }
+    /** h[12] remains 0 (offset) **/
+    if (nonceSize == 8) {
+        /** h[13] remains 0 (offset) **/
+        hs->h[14] = LOAD_U32_LITTLE(nonce + 0);
+        hs->h[15] = LOAD_U32_LITTLE(nonce + 4);
+    } else {
+        hs->h[13] = LOAD_U32_LITTLE(nonce + 0);
+        hs->h[14] = LOAD_U32_LITTLE(nonce + 4);
+        hs->h[15] = LOAD_U32_LITTLE(nonce + 8);
+    }
 
-    memcpy(&hs->h[4], key, KEY_SIZE);
-    fix_endianess(hs->h, 4, 12);
-
-    memcpy(&hs->h[14], nonce, NONCE_SIZE);
-    fix_endianess(hs->h, 14, 16);
-
+    hs->nonceSize = nonceSize;
     hs->usedKeyStream = sizeof hs->keyStream;
 
     return 0;
@@ -160,12 +136,22 @@ static int chacha20_core(stream_state *state)
     for (i=0; i<16; i++)
         h[i] += state->h[i];
 
-    fix_endianess(h, 0, 16);
-    memcpy(state->keyStream, h, sizeof h);
+    for (i=0; i<16; i++) {
+        STORE_U32_LITTLE(state->keyStream + 4*i, h[i]);
+    }
+
     state->usedKeyStream = 0;
 
-    if (++state->h[12] == 0) {
-        if (++state->h[13] == 0) {
+    if (state->nonceSize == 8) {
+        /** Nonce is 64 bits, counter is two words **/
+        if (++state->h[12] == 0) {
+            if (++state->h[13] == 0) {
+                return ERR_MAX_DATA;
+            }
+        }
+    } else {
+        /** Nonce is 96 bits, counter is one word **/
+        if (++state->h[12] == 0) {
             return ERR_MAX_DATA;
         }
     }
@@ -193,7 +179,7 @@ EXPORT_SYM int chacha20_encrypt(stream_state *state,
                 return result;
         }
 
-        keyStreamToUse = minAB(len, sizeof state->keyStream - state->usedKeyStream);
+        keyStreamToUse = (unsigned)MIN(len, sizeof state->keyStream - state->usedKeyStream);
         for (i=0; i<keyStreamToUse; i++)
             *out++ = *in++ ^ state->keyStream[i + state->usedKeyStream];
 
@@ -217,8 +203,17 @@ EXPORT_SYM int chacha20_seek(stream_state *state,
     if (offset >= sizeof state->keyStream)
         return ERR_MAX_OFFSET;
 
-    state->h[12] = block_low;
-    state->h[13] = block_high;
+    if (state->nonceSize == 8) {
+        /** Nonce is 64 bits, counter is two words **/
+        state->h[12] = (uint32_t)block_low;
+        state->h[13] = (uint32_t)block_high;
+    } else {
+        /** Nonce is 96 bits, counter is one word **/
+        if (block_high > 0) {
+            return ERR_MAX_OFFSET;
+        }
+        state->h[12] = (uint32_t)block_low;
+    }
 
     result = chacha20_core(state);
     if (result)

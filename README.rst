@@ -10,7 +10,7 @@ PyCryptodome
 PyCryptodome is a self-contained Python package of low-level
 cryptographic primitives.
 
-It supports Python 2.6 or newer, all Python 3 versions and PyPy.
+It supports Python 2.6 and 2.7, Python 3.4 and newer, and PyPy.
 
 The installation procedure depends on the package you want the library to be in.
 PyCryptodome can be used as:
@@ -50,6 +50,8 @@ with respect to the last official version of PyCrypto (2.6.1):
   and more)
 * SHA-3 (including SHAKE XOFs), SHA-512/t and BLAKE2 hash algorithms
 * Salsa20 and ChaCha20 stream ciphers
+* Poly1305 MAC
+* ChaCha20-Poly1305 authenticated cipher
 * scrypt and HKDF
 * Deterministic (EC)DSA
 * Password-protected PKCS#8 key containers

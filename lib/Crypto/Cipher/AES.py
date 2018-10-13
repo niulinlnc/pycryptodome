@@ -42,9 +42,9 @@ from Crypto.Util._raw_api import (load_pycryptodome_raw_lib,
                                   VoidPointer, SmartPointer,
                                   c_size_t, c_uint8_ptr)
 
+from Crypto.Util import _cpu_features
+from Crypto.Random import get_random_bytes
 
-_raw_cpuid_lib = load_pycryptodome_raw_lib("Crypto.Util._cpuid",
-                                           "int have_aes_ni(void);")
 
 _cproto = """
         int AES_start_operation(const uint8_t key[],
@@ -62,15 +62,18 @@ _cproto = """
         """
 
 
+# Load portable AES
 _raw_aes_lib = load_pycryptodome_raw_lib("Crypto.Cipher._raw_aes",
                                          _cproto)
 
-_raw_aesni_lib = None
+# Try to load AES with AES NI instructions
 try:
-    if _raw_cpuid_lib.have_aes_ni() == 1:
+    _raw_aesni_lib = None
+    if _cpu_features.have_aes_ni():
         _raw_aesni_lib = load_pycryptodome_raw_lib("Crypto.Cipher._raw_aesni",
                                                    _cproto.replace("AES",
-                                                                  "AESNI"))
+                                                                   "AESNI"))
+# _raw_aesni may not have been compiled in
 except OSError:
     pass
 
@@ -104,6 +107,24 @@ def _create_base_cipher(dict_parameters):
         raise ValueError("Error %X while instantiating the AES cipher"
                          % result)
     return SmartPointer(cipher.get(), stop_operation)
+
+
+def _derive_Poly1305_key_pair(key, nonce):
+    """Derive a tuple (r, s, nonce) for a Poly1305 MAC.
+    
+    If nonce is ``None``, a new 16-byte nonce is generated.
+    """
+
+    if len(key) != 32:
+        raise ValueError("Poly1305 with AES requires a 32-byte key")
+
+    if nonce is None:
+        nonce = get_random_bytes(16)
+    elif len(nonce) != 16:
+        raise ValueError("Poly1305 with AES requires a 16-byte nonce")
+
+    s = new(key[:16], MODE_ECB).encrypt(nonce)
+    return key[16:], s, nonce
 
 
 def new(key, mode, *args, **kwargs):
@@ -145,7 +166,7 @@ def new(key, mode, *args, **kwargs):
             ``MODE_SIV``, ``MODE_OCB``, and ``MODE_CTR``).
 
             A value that must never be reused for any other encryption done
-            with this key.
+            with this key (except possibly for ``MODE_SIV``, see below).
 
             For ``MODE_EAX``, ``MODE_GCM`` and ``MODE_SIV`` there are no
             restrictions on its length (recommended: **16** bytes).
@@ -159,10 +180,14 @@ def new(key, mode, *args, **kwargs):
 
             For ``MODE_CTR``, its length must be in the range **[0..15]**
             (recommended: **8**).
+            
+            For ``MODE_SIV``, the nonce is optional, if it is not specified,
+            then no nonce is being used, which renders the encryption
+            deterministic.
 
-            In not provided, a random byte string of the recommended
-            length is used (you must then read its value with the :attr:`nonce`
-            attribute).
+            If not provided, for modes other than ``MODE_SIV```, a random
+            byte string of the recommended length is used (you must then
+            read its value with the :attr:`nonce` attribute).
 
         *   **segment_size** (*integer*) --
             (Only ``MODE_CFB``).The number of **bits** the plaintext and ciphertext
@@ -198,6 +223,7 @@ def new(key, mode, *args, **kwargs):
 
     kwargs["add_aes_modes"] = True
     return _create_cipher(sys.modules[__name__], key, mode, *args, **kwargs)
+
 
 MODE_ECB = 1
 MODE_CBC = 2

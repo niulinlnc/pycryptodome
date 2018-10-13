@@ -20,9 +20,9 @@
  * ===================================================================
  */
 
-#include "pycrypto_common.h"
+#include "common.h"
 
-FAKE_INIT(galois)
+FAKE_INIT(ghash_portable)
 
 #define ALIGNMENT 32
 
@@ -48,31 +48,6 @@ typedef struct {
 } t_exp_key;
 
 /**
- * Big Endian to word conversions
- */
-static uint64_t be_to_word(const uint8_t fb[8])
-{
-    uint64_t tmp;
-    int i;
-    tmp = 0;
-    for (i=0; i<8; i++)
-        tmp = tmp<<8 ^ *fb++;
-    return tmp;
-}
-
-/**
- *  Word to Big Endian conversions
- */
-static void word_to_be(uint8_t fb[8], uint64_t w)
-{
-    int i;
-    for (i=0; i<8; i++) {
-        fb[7-i] = (uint8_t) w;
-        w >>= 8;
-    }
-}
-
-/**
  * Create a V table. V[i] is the value H*x^i (i=0..127).
  * \param h         The 16 byte GHASH key
  * \param tables    A pointer to an allocated V table
@@ -86,8 +61,8 @@ static void make_v_tables(const uint8_t h[16], t_v_tables *tables)
 
     cur = &((*tables)[0][1]);
 
-    (*cur)[0] = be_to_word(&h[0]);
-    (*cur)[1] = be_to_word(&h[8]);
+    (*cur)[0] = LOAD_U64_BIG(&h[0]);
+    (*cur)[1] = LOAD_U64_BIG(&h[8]);
 
     for (i=1; i<128; i++) {
         uint64_t c;
@@ -120,12 +95,12 @@ static void gcm_mult2(uint8_t out[16], const t_v_tables *key_tables, const uint8
     z[0] = z[1] = 0;
     bit_scan_128 = 0;
     for (i=0; i<16; i++) {
-        uint8_t xi;
+        unsigned xi;
         int j;
 
         xi = x[i];
         for (j=0; j<8; j++) {
-            int bit;
+            unsigned bit;
 
             bit = xi>>7 & 1; /** Constant time */
             z[0] ^= (*key_tables)[bit_scan_128][bit][0];
@@ -136,10 +111,9 @@ static void gcm_mult2(uint8_t out[16], const t_v_tables *key_tables, const uint8
         }
     }
     
-    word_to_be(out,   z[0]);
-    word_to_be(out+8, z[1]);
+    STORE_U64_BIG(out,   z[0]);
+    STORE_U64_BIG(out+8, z[1]);
 }
-
 
 /**
  * Compute the GHASH of a piece of data given an arbitrary Y_0,
@@ -153,7 +127,7 @@ static void gcm_mult2(uint8_t out[16], const t_v_tables *key_tables, const uint8
  *
  * y_out and y_int can point to the same buffer.
  */
-EXPORT_SYM int ghash(
+EXPORT_SYM int ghash_portable(
         uint8_t y_out[16],
         const uint8_t block_data[],
         size_t len,
@@ -161,7 +135,7 @@ EXPORT_SYM int ghash(
         const t_exp_key *exp_key
         )
 {
-    unsigned int i;
+    unsigned i;
     const t_v_tables *v_tables;
 
     if (NULL==y_out || NULL==block_data || NULL==y_in || NULL==exp_key)
@@ -174,7 +148,7 @@ EXPORT_SYM int ghash(
 
     memcpy(y_out, y_in, 16);
     for (i=0; i<len; i+=16) {
-        int j;
+        unsigned j;
         uint8_t x[16];
 
         for (j=0; j<16; j++) {
@@ -189,7 +163,7 @@ EXPORT_SYM int ghash(
 /**
  * Expand the AES key into a Python (byte) string object.
  */ 
-EXPORT_SYM int ghash_expand(const uint8_t h[16], t_exp_key **ghash_tables)
+EXPORT_SYM int ghash_expand_portable(const uint8_t h[16], t_exp_key **ghash_tables)
 {
     t_exp_key *exp_key;
 
@@ -200,13 +174,13 @@ EXPORT_SYM int ghash_expand(const uint8_t h[16], t_exp_key **ghash_tables)
     if (NULL == exp_key)
         return ERR_MEMORY;
     
-    exp_key->offset = ALIGNMENT - ((uintptr_t)exp_key->buffer & (ALIGNMENT-1));
+    exp_key->offset = ALIGNMENT - (int)((uintptr_t)exp_key->buffer & (ALIGNMENT-1));
     make_v_tables(h, (t_v_tables*)(exp_key->buffer + exp_key->offset));
     
     return 0;
 }
 
-EXPORT_SYM int ghash_destroy(t_exp_key *ghash_tables)
+EXPORT_SYM int ghash_destroy_portable(t_exp_key *ghash_tables)
 {
     free(ghash_tables);
     return 0;

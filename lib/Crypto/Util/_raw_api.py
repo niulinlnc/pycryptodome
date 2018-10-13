@@ -35,8 +35,7 @@ from Crypto.Util._file_system import pycryptodome_filename
 #
 # List of file suffixes for Python extensions
 #
-if sys.version_info[0] <= 3 or \
-   (sys.version_info[0] == 3 and sys.version_info[1] <= 3):
+if sys.version_info[0] < 3:
 
     import imp
     extension_suffixes = []
@@ -56,6 +55,9 @@ else:
     _buffer_type = (bytearray, memoryview)
 
 try:
+    if sys.version_info[0] == 2 and sys.version_info[1] < 7:
+        raise ImportError("CFFI is only supported with Python 2.7+")
+
     from cffi import FFI
 
     ffi = FFI()
@@ -180,7 +182,7 @@ except ImportError:
         ]
 
         # Extra field for CPython 2.6/2.7
-        if sys.version_info[0] == 2 or (sys.version_info[0] == 3 and sys.version_info[1] <= 2):
+        if sys.version_info[0] == 2:
             _fields_.insert(-1, ('smalltable', _c_ssize_t * 2))
 
     def c_uint8_ptr(data):
@@ -253,7 +255,7 @@ def load_pycryptodome_raw_lib(name, cdecl):
             filename = basename + ext
             return load_lib(pycryptodome_filename(dir_comps, filename),
                             cdecl)
-        except OSError, exp:
+        except OSError as exp:
             attempts.append("Trying '%s': %s" % (filename, str(exp)))
     raise OSError("Cannot load native module '%s': %s" % (name, ", ".join(attempts)))
 

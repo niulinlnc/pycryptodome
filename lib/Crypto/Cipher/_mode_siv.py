@@ -34,9 +34,9 @@ Synthetic Initialization Vector (SIV) mode.
 
 __all__ = ['SivMode']
 
-from binascii import hexlify
+from binascii import hexlify, unhexlify
 
-from Crypto.Util.py3compat import byte_string, bord, unhexlify, _copy_bytes
+from Crypto.Util.py3compat import byte_string, bord, _copy_bytes
 
 from Crypto.Util.number import long_to_bytes, bytes_to_long
 from Crypto.Protocol.KDF import _S2V
@@ -371,7 +371,7 @@ def _create_siv_cipher(factory, **kwargs):
 
     try:
         key = kwargs.pop("key")
-    except KeyError, e:
+    except KeyError as e:
         raise TypeError("Missing parameter: " + str(e))
 
     nonce = kwargs.pop("nonce", None)

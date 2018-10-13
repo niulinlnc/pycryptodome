@@ -34,7 +34,9 @@ Galois/Counter Mode (GCM).
 
 __all__ = ['GcmMode']
 
-from Crypto.Util.py3compat import byte_string, bord, unhexlify, _copy_bytes
+from binascii import unhexlify
+
+from Crypto.Util.py3compat import byte_string, bord, _copy_bytes
 
 from Crypto.Util.number import long_to_bytes, bytes_to_long
 from Crypto.Hash import BLAKE2s
@@ -44,17 +46,55 @@ from Crypto.Util._raw_api import (load_pycryptodome_raw_lib, VoidPointer,
                                   create_string_buffer, get_raw_buffer,
                                   SmartPointer, c_size_t, c_uint8_ptr)
 
-_raw_galois_lib = load_pycryptodome_raw_lib("Crypto.Util._galois",
-                    """
-                    int ghash(  uint8_t y_out[16],
-                                const uint8_t block_data[],
-                                size_t len,
-                                const uint8_t y_in[16],
-                                const void *exp_key);
-                    int ghash_expand(const uint8_t h[16],
-                                     void **ghash_tables);
-                    int ghash_destroy(void *ghash_tables);
-                    """)
+from Crypto.Util import _cpu_features
+
+
+# C API by module implementing GHASH
+_ghash_api_template = """
+    int ghash_%imp%(uint8_t y_out[16],
+                    const uint8_t block_data[],
+                    size_t len,
+                    const uint8_t y_in[16],
+                    const void *exp_key);
+    int ghash_expand_%imp%(const uint8_t h[16],
+                           void **ghash_tables);
+    int ghash_destroy_%imp%(void *ghash_tables);
+"""
+
+def _build_impl(lib, postfix):
+    from collections import namedtuple
+
+    funcs = ( "ghash", "ghash_expand", "ghash_destroy" )
+    GHASH_Imp = namedtuple('_GHash_Imp', funcs)
+    try:
+        imp_funcs = [ getattr(lib, x + "_" + postfix) for x in funcs ]
+    except AttributeError:      # Make sphinx stop complaining with its mocklib
+        imp_funcs = [ None ] * 3
+    params = dict(zip(funcs, imp_funcs))
+    return GHASH_Imp(**params)
+
+
+def _get_ghash_portable():
+    api = _ghash_api_template.replace("%imp%", "portable")
+    lib = load_pycryptodome_raw_lib("Crypto.Hash._ghash_portable", api)
+    result = _build_impl(lib, "portable")
+    return result
+_ghash_portable = _get_ghash_portable()
+
+
+def _get_ghash_clmul():
+    """Return None if CLMUL implementation is not available"""
+
+    if not _cpu_features.have_clmul():
+        return None
+    try:
+        api = _ghash_api_template.replace("%imp%", "clmul")
+        lib = load_pycryptodome_raw_lib("Crypto.Hash._ghash_clmul", api)
+        result = _build_impl(lib, "clmul")
+    except OSError:
+        result = None
+    return result
+_ghash_clmul = _get_ghash_clmul()
 
 
 class _GHASH(object):
@@ -69,17 +109,19 @@ class _GHASH(object):
     (x^128 + x^7 + x^2 + x + 1).
     """
 
-    def __init__(self, subkey):
+    def __init__(self, subkey, ghash_c):
         assert len(subkey) == 16
 
+        self.ghash_c = ghash_c
+
         self._exp_key = VoidPointer()
-        result = _raw_galois_lib.ghash_expand(c_uint8_ptr(subkey),
-                                              self._exp_key.address_of())
+        result = ghash_c.ghash_expand(c_uint8_ptr(subkey),
+                                      self._exp_key.address_of())
         if result:
-            raise ValueError("Error %d while expanding the GMAC key" % result)
+            raise ValueError("Error %d while expanding the GHASH key" % result)
 
         self._exp_key = SmartPointer(self._exp_key.get(),
-                                     _raw_galois_lib.ghash_destroy)
+                                     ghash_c.ghash_destroy)
 
         # create_string_buffer always returns a string of zeroes
         self._last_y = create_string_buffer(16)
@@ -87,13 +129,13 @@ class _GHASH(object):
     def update(self, block_data):
         assert len(block_data) % 16 == 0
 
-        result = _raw_galois_lib.ghash(self._last_y,
-                                       c_uint8_ptr(block_data),
-                                       c_size_t(len(block_data)),
-                                       self._last_y,
-                                       self._exp_key.get())
+        result = self.ghash_c.ghash(self._last_y,
+                                    c_uint8_ptr(block_data),
+                                    c_size_t(len(block_data)),
+                                    self._last_y,
+                                    self._exp_key.get())
         if result:
-            raise ValueError("Error %d while updating GMAC" % result)
+            raise ValueError("Error %d while updating GHASH" % result)
 
         return self
 
@@ -133,7 +175,7 @@ class GcmMode(object):
     :undocumented: __init__
     """
 
-    def __init__(self, factory, key, nonce, mac_len, cipher_params):
+    def __init__(self, factory, key, nonce, mac_len, cipher_params, ghash_c):
 
         self.block_size = factory.block_size
         if self.block_size != 16:
@@ -144,7 +186,7 @@ class GcmMode(object):
             raise ValueError("Nonce cannot be empty")
         if isinstance(nonce, unicode):
             raise TypeError("Nonce must be a byte string")
-        
+
         # See NIST SP 800 38D, 5.2.1.1
         if len(nonce) > 2**64 - 1:
             raise ValueError("Nonce exceeds maximum length")
@@ -188,7 +230,7 @@ class GcmMode(object):
             ghash_in = (self.nonce +
                         b'\x00' * fill +
                         long_to_bytes(8 * len(nonce), 8))
-            self._j0 = bytes_to_long(_GHASH(hash_subkey)
+            self._j0 = bytes_to_long(_GHASH(hash_subkey, ghash_c)
                                      .update(ghash_in)
                                      .digest())
 
@@ -202,7 +244,7 @@ class GcmMode(object):
                                    **cipher_params)
 
         # Step 5 - Bootstrat GHASH
-        self._signer = _GHASH(hash_subkey)
+        self._signer = _GHASH(hash_subkey, ghash_c)
 
         # Step 6 - Prepare GCTR cipher for GMAC
         self._tag_cipher = factory.new(key,
@@ -539,7 +581,7 @@ def _create_gcm_cipher(factory, **kwargs):
 
     try:
         key = kwargs.pop("key")
-    except KeyError, e:
+    except KeyError as e:
         raise TypeError("Missing parameter:" + str(e))
 
     nonce = kwargs.pop("nonce", None)
@@ -547,4 +589,11 @@ def _create_gcm_cipher(factory, **kwargs):
         nonce = get_random_bytes(16)
     mac_len = kwargs.pop("mac_len", 16)
 
-    return GcmMode(factory, key, nonce, mac_len, kwargs)
+    # Not documented - only used for testing
+    use_clmul = kwargs.pop("use_clmul", True)
+    if use_clmul and _ghash_clmul:
+        ghash_c = _ghash_clmul
+    else:
+        ghash_c = _ghash_portable
+
+    return GcmMode(factory, key, nonce, mac_len, kwargs, ghash_c)

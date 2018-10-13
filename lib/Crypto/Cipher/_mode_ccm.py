@@ -35,8 +35,9 @@ Counter with CBC-MAC (CCM) mode.
 __all__ = ['CcmMode']
 
 import struct
+from binascii import unhexlify
 
-from Crypto.Util.py3compat import (byte_string, bord, unhexlify,
+from Crypto.Util.py3compat import (byte_string, bord,
                                    _copy_bytes, _is_mutable)
 
 from Crypto.Util.strxor import strxor
@@ -610,7 +611,7 @@ def _create_ccm_cipher(factory, **kwargs):
 
     try:
         key = key = kwargs.pop("key")
-    except KeyError, e:
+    except KeyError as e:
         raise TypeError("Missing parameter: " + str(e))
 
     nonce = kwargs.pop("nonce", None)  # N

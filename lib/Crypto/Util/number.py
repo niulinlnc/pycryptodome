@@ -28,13 +28,24 @@ import math
 import sys
 import struct
 from Crypto import Random
-from Crypto.Util.py3compat import *
+from Crypto.Util.py3compat import _memoryview
 
 # Backward compatibility
 _fastmath = None
 
-# New functions
-from _number_new import *
+
+def ceil_div(n, d):
+    """Return ceil(n/d), that is, the smallest integer r such that r*d >= n"""
+
+    if d == 0:
+        raise ZeroDivisionError()
+    if (n < 0) or (d < 0):
+        raise ValueError("Non positive values")
+    r, q = divmod(n, d)
+    if (n != 0) and (q != 0):
+        r += 1
+    return r
+
 
 def size (N):
     """Returns the size of the number N in bits."""
@@ -320,7 +331,7 @@ def getStrongPrime(N, e=0, false_positive_prob=1e-6, randfunc=None):
     return X
 
 def isPrime(N, false_positive_prob=1e-6, randfunc=None):
-    """Test if a number *N* is a prime.
+    r"""Test if a number *N* is a prime.
 
     Args:
         false_positive_prob (float):
@@ -419,11 +430,15 @@ def bytes_to_long(s):
     acc = 0
 
     unpack = struct.unpack
-    
-    # Up to Python 2.7.3, struct.unpack can't work with bytearrays
-    if sys.version_info[0] < 3 and isinstance(s, bytearray):
-        s = bytes(s)
-    
+
+    # Up to Python 2.7.4, struct.unpack can't work with bytearrays nor
+    # memoryviews
+    if sys.version_info[0:3] < (2, 7, 4):
+        if isinstance(s, bytearray):
+            s = bytes(s)
+        elif isinstance(s, _memoryview):
+            s = s.tobytes()
+
     length = len(s)
     if length % 4:
         extra = (4 - length % 4)
